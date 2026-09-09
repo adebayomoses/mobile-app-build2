@@ -199,12 +199,39 @@ jobs:
           ESIPHER_IOS_PROFILE_BASE64: ${{ secrets.ESIPHER_IOS_PROFILE_BASE64 }}
           ESIPHER_IOS_PROFILE_NAME: ${{ secrets.ESIPHER_IOS_PROFILE_NAME }}
 
+      - name: Point the App target at the distribution profile
+        working-directory: ios/App
+        # Manual signing has to be set on the App target only — passing
+        # it on the xcodebuild command line applies it to every target,
+        # including the CocoaPods framework targets, which reject a
+        # provisioning profile.
+        run: |
+          gem install xcodeproj --no-document
+          ruby - "$ESIPHER_APPLE_TEAM_ID" "$ESIPHER_IOS_PROFILE_NAME" <<'RUBY'
+          require "xcodeproj"
+          team, profile = ARGV
+          project = Xcodeproj::Project.open("App.xcodeproj")
+          app = project.targets.find { |t| t.name == "App" } or abort("::error::App target not found in App.xcodeproj")
+          app.build_configurations.each do |c|
+            c.build_settings["CODE_SIGN_STYLE"] = "Manual"
+            c.build_settings["CODE_SIGN_IDENTITY"] = "Apple Distribution"
+            c.build_settings["CODE_SIGN_IDENTITY[sdk=iphoneos*]"] = "Apple Distribution"
+            c.build_settings["DEVELOPMENT_TEAM"] = team
+            c.build_settings["DEVELOPMENT_TEAM[sdk=iphoneos*]"] = team
+            c.build_settings["PROVISIONING_PROFILE_SPECIFIER"] = profile
+            c.build_settings["PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]"] = profile
+          end
+          project.save
+          RUBY
+        env:
+          ESIPHER_APPLE_TEAM_ID: ${{ secrets.ESIPHER_APPLE_TEAM_ID }}
+          ESIPHER_IOS_PROFILE_NAME: ${{ secrets.ESIPHER_IOS_PROFILE_NAME }}
+
       - name: Archive
         working-directory: ios/App
-        # Manual signing with the distribution certificate + App Store
-        # profile Esipher provisioned via the App Store Connect API. The
-        # bundle id comes from capacitor.config.json's appId, which
-        # `npx cap add ios` wrote into the Xcode project.
+        # No signing settings on the command line — the App target now
+        # carries them, and only it should. The bundle id comes from
+        # capacitor.config.json's appId (set by `npx cap add ios`).
         run: |
           xcodebuild \
             -workspace App.xcworkspace \
@@ -212,14 +239,7 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/App.xcarchive" \
-            DEVELOPMENT_TEAM="$ESIPHER_APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
-            PROVISIONING_PROFILE_SPECIFIER="$ESIPHER_IOS_PROFILE_NAME" \
             archive
-        env:
-          ESIPHER_APPLE_TEAM_ID: ${{ secrets.ESIPHER_APPLE_TEAM_ID }}
-          ESIPHER_IOS_PROFILE_NAME: ${{ secrets.ESIPHER_IOS_PROFILE_NAME }}
 
       - name: Export the .ipa
         working-directory: ios/App
