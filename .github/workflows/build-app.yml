@@ -10,12 +10,14 @@ name: Build app for Esipher
 #   Secrets Esipher set: ESIPHER_KEYSTORE_BASE64, ESIPHER_KEYSTORE_PASSWORD,
 #   ESIPHER_KEY_ALIAS.
 #
-# iOS job — runs only when a .esipher-ios.json marker file is present
-# (Esipher adds it once you fill in the App Store Connect fields).
+# iOS job — runs only when the repo variable ESIPHER_IOS_ENABLED is
+# 'true' (Esipher sets it once you fill in the App Store Connect fields).
 # Uploads the "esipher-app-ios" artifact:
-#   - App.ipa — signed via automatic signing; upload to App Store Connect.
-#   Secrets Esipher set: ESIPHER_ASC_KEY_P8, ESIPHER_ASC_KEY_ID,
-#   ESIPHER_ASC_ISSUER_ID, ESIPHER_APPLE_TEAM_ID.
+#   - App.ipa — signed for the App Store; upload to App Store Connect.
+#   Secrets Esipher set: ESIPHER_IOS_P12_BASE64, ESIPHER_IOS_P12_PASSWORD,
+#   ESIPHER_IOS_PROFILE_BASE64, ESIPHER_IOS_PROFILE_NAME,
+#   ESIPHER_APPLE_TEAM_ID. Esipher provisions the distribution
+#   certificate + App Store profile via the App Store Connect API.
 
 on:
   push:
@@ -146,22 +148,46 @@ jobs:
         run: pod install
         working-directory: ios/App
 
-      - name: Write the App Store Connect API key
+      - name: Set up code signing
         run: |
-          if [ -z "${ESIPHER_ASC_KEY_P8}" ]; then
-            echo "::error::ESIPHER_ASC_KEY_P8 secret is missing — re-save the iOS settings in Esipher."
-            exit 1
-          fi
-          mkdir -p "$RUNNER_TEMP/asc"
-          printf '%s\n' "${ESIPHER_ASC_KEY_P8}" > "$RUNNER_TEMP/asc/AuthKey_${ESIPHER_ASC_KEY_ID}.p8"
+          for v in ESIPHER_IOS_P12_BASE64 ESIPHER_IOS_P12_PASSWORD ESIPHER_IOS_PROFILE_BASE64 ESIPHER_IOS_PROFILE_NAME; do
+            if [ -z "$(eval echo \$$v)" ]; then
+              echo "::error::$v secret is missing — re-save the iOS settings in Esipher so it can re-provision signing."
+              exit 1
+            fi
+          done
+
+          KEYCHAIN="$RUNNER_TEMP/esipher-signing.keychain-db"
+          KEYCHAIN_PW="$(openssl rand -base64 24)"
+
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+
+          echo "$ESIPHER_IOS_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/dist.p12"
+          security import "$RUNNER_TEMP/dist.p12" -P "$ESIPHER_IOS_P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PW" "$KEYCHAIN" >/dev/null
+
+          # Make our keychain searchable alongside the login keychain.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed s/\"//g)
+
+          PROFILES="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILES"
+          echo "$ESIPHER_IOS_PROFILE_BASE64" | base64 --decode > "$PROFILES/esipher.mobileprovision"
+
+          rm -f "$RUNNER_TEMP/dist.p12"
         env:
-          ESIPHER_ASC_KEY_P8: ${{ secrets.ESIPHER_ASC_KEY_P8 }}
-          ESIPHER_ASC_KEY_ID: ${{ secrets.ESIPHER_ASC_KEY_ID }}
+          ESIPHER_IOS_P12_BASE64: ${{ secrets.ESIPHER_IOS_P12_BASE64 }}
+          ESIPHER_IOS_P12_PASSWORD: ${{ secrets.ESIPHER_IOS_P12_PASSWORD }}
+          ESIPHER_IOS_PROFILE_BASE64: ${{ secrets.ESIPHER_IOS_PROFILE_BASE64 }}
+          ESIPHER_IOS_PROFILE_NAME: ${{ secrets.ESIPHER_IOS_PROFILE_NAME }}
 
       - name: Archive
         working-directory: ios/App
-        # The bundle identifier comes from capacitor.config.json's appId,
-        # which `npx cap add ios` already wrote into the Xcode project.
+        # Manual signing with the distribution certificate + App Store
+        # profile Esipher provisioned via the App Store Connect API. The
+        # bundle id comes from capacitor.config.json's appId, which
+        # `npx cap add ios` wrote into the Xcode project.
         run: |
           xcodebuild \
             -workspace App.xcworkspace \
@@ -169,17 +195,14 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/App.xcarchive" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ESIPHER_ASC_KEY_ID}.p8" \
-            -authenticationKeyID "$ESIPHER_ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ESIPHER_ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$ESIPHER_APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$ESIPHER_IOS_PROFILE_NAME" \
             archive
         env:
-          ESIPHER_ASC_KEY_ID: ${{ secrets.ESIPHER_ASC_KEY_ID }}
-          ESIPHER_ASC_ISSUER_ID: ${{ secrets.ESIPHER_ASC_ISSUER_ID }}
           ESIPHER_APPLE_TEAM_ID: ${{ secrets.ESIPHER_APPLE_TEAM_ID }}
+          ESIPHER_IOS_PROFILE_NAME: ${{ secrets.ESIPHER_IOS_PROFILE_NAME }}
 
       - name: Export the .ipa
         working-directory: ios/App
@@ -188,14 +211,7 @@ jobs:
             -exportArchive \
             -archivePath "$RUNNER_TEMP/App.xcarchive" \
             -exportPath "$RUNNER_TEMP/ios-export" \
-            -exportOptionsPlist "$GITHUB_WORKSPACE/exportOptions.plist" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ESIPHER_ASC_KEY_ID}.p8" \
-            -authenticationKeyID "$ESIPHER_ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ESIPHER_ASC_ISSUER_ID"
-        env:
-          ESIPHER_ASC_KEY_ID: ${{ secrets.ESIPHER_ASC_KEY_ID }}
-          ESIPHER_ASC_ISSUER_ID: ${{ secrets.ESIPHER_ASC_ISSUER_ID }}
+            -exportOptionsPlist "$GITHUB_WORKSPACE/exportOptions.plist"
 
       - name: Collect the .ipa
         run: |
