@@ -6,15 +6,20 @@ name: Build app for Esipher
 # It deliberately does NOT run on push, so it never starts before the
 # secrets it needs are in place.
 #
-# Android job — always runs. Uploads the "esipher-app" artifact:
+# The "platforms" dispatch input decides which jobs run:
+#   both    — Android + iOS   (default)
+#   android — Android only    (Esipher's Android tab uses this)
+#   ios     — iOS only        (Esipher's iOS tab uses this)
+#
+# Android job — uploads the "esipher-app" artifact:
 #   - app-debug.apk   — install straight onto a device for testing.
 #   - app-release.aab  — signed; upload to the Google Play Console.
 #   Secrets Esipher set: ESIPHER_KEYSTORE_BASE64, ESIPHER_KEYSTORE_PASSWORD,
 #   ESIPHER_KEY_ALIAS.
 #
-# iOS job — runs only when the repo variable ESIPHER_IOS_ENABLED is
-# 'true' (Esipher sets it once you fill in the App Store Connect fields).
-# Uploads the "esipher-app-ios" artifact:
+# iOS job — additionally requires the repo variable ESIPHER_IOS_ENABLED
+# to be 'true' (Esipher sets it once iOS signing is configured), so it
+# can never start half-set-up. Uploads the "esipher-app-ios" artifact:
 #   - App.ipa — signed for the App Store; upload to App Store Connect.
 #   Secrets Esipher set: ESIPHER_IOS_P12_BASE64, ESIPHER_IOS_P12_PASSWORD,
 #   ESIPHER_IOS_PROFILE_BASE64, ESIPHER_IOS_PROFILE_NAME,
@@ -23,6 +28,15 @@ name: Build app for Esipher
 
 on:
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: Which app(s) to build
+        type: choice
+        default: both
+        options:
+          - both
+          - android
+          - ios
 
 permissions:
   contents: read
@@ -30,6 +44,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Runs unless the dispatch explicitly asked for iOS only.
+    if: ${{ github.event.inputs.platforms != 'ios' }}
 
     steps:
       - name: Check out the repo
@@ -118,11 +134,11 @@ jobs:
 
   build-ios:
     runs-on: macos-14
-    # Runs only when Esipher has set this repo variable, which it does
-    # once the App Store Connect fields are filled in. (hashFiles() and
-    # the secrets context aren't usable in a job-level if:, the vars
-    # context is.)
-    if: ${{ vars.ESIPHER_IOS_ENABLED == 'true' }}
+    # Runs when the dispatch didn't ask for Android only AND iOS signing
+    # is configured (Esipher sets ESIPHER_IOS_ENABLED once it has
+    # provisioned the certificate + profile). vars is usable in a
+    # job-level if:; secrets and hashFiles() are not.
+    if: ${{ github.event.inputs.platforms != 'android' && vars.ESIPHER_IOS_ENABLED == 'true' }}
 
     steps:
       - name: Check out the repo
