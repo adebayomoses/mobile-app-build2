@@ -1,8 +1,10 @@
 name: Build app for Esipher
 
 # Builds the Capacitor WebView wrapper Esipher generated into this repo.
-# Runs on every push (Esipher pushes here when you change the app's
-# settings) and can be re-run by hand from the Actions tab.
+# Esipher triggers it (Save & build / Rebuild) once it has pushed the
+# signing secrets; you can also re-run it by hand from the Actions tab.
+# It deliberately does NOT run on push, so it never starts before the
+# secrets it needs are in place.
 #
 # Android job — always runs. Uploads the "esipher-app" artifact:
 #   - app-debug.apk   — install straight onto a device for testing.
@@ -20,7 +22,6 @@ name: Build app for Esipher
 #   certificate + App Store profile via the App Store Connect API.
 
 on:
-  push:
   workflow_dispatch:
 
 permissions:
