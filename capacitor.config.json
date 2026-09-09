@@ -1,0 +1,15 @@
+{
+    "appId": "com.inwebtify.com",
+    "appName": "Inwebtify",
+    "webDir": "www",
+    "server": {
+        "url": "https://inwebtify.com/",
+        "cleartext": false,
+        "androidScheme": "https",
+        "errorPath": "index.html"
+    },
+    "android": {
+        "backgroundColor": "#ffffff"
+    },
+    "backgroundColor": "#ffffff"
+}

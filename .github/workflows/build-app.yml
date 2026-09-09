@@ -1,0 +1,211 @@
+name: Build app for Esipher
+
+# Builds the Capacitor WebView wrapper Esipher generated into this repo.
+# Runs on every push (Esipher pushes here when you change the app's
+# settings) and can be re-run by hand from the Actions tab.
+#
+# Android job — always runs. Uploads the "esipher-app" artifact:
+#   - app-debug.apk   — install straight onto a device for testing.
+#   - app-release.aab  — signed; upload to the Google Play Console.
+#   Secrets Esipher set: ESIPHER_KEYSTORE_BASE64, ESIPHER_KEYSTORE_PASSWORD,
+#   ESIPHER_KEY_ALIAS.
+#
+# iOS job — runs only when a .esipher-ios.json marker file is present
+# (Esipher adds it once you fill in the App Store Connect fields).
+# Uploads the "esipher-app-ios" artifact:
+#   - App.ipa — signed via automatic signing; upload to App Store Connect.
+#   Secrets Esipher set: ESIPHER_ASC_KEY_P8, ESIPHER_ASC_KEY_ID,
+#   ESIPHER_ASC_ISSUER_ID, ESIPHER_APPLE_TEAM_ID.
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Add the Android platform
+        run: npx --yes cap add android
+
+      - name: Generate launcher icons and splash screens
+        run: npx --yes capacitor-assets generate --android
+
+      - name: Copy web assets into the Android project
+        run: npx --yes cap sync android
+
+      - name: Restore signing keystore
+        run: |
+          if [ -z "${ESIPHER_KEYSTORE_BASE64}" ]; then
+            echo "::error::ESIPHER_KEYSTORE_BASE64 secret is missing — re-run 'Generate & build app' in Esipher so it can set the signing secrets."
+            exit 1
+          fi
+          echo "${ESIPHER_KEYSTORE_BASE64}" | base64 -d > android/app/release.p12
+        env:
+          ESIPHER_KEYSTORE_BASE64: ${{ secrets.ESIPHER_KEYSTORE_BASE64 }}
+
+      - name: Wire the keystore into Gradle
+        run: |
+          cat >> android/app/build.gradle <<'GRADLE'
+
+          // --- added by Esipher: release signing ---
+          android {
+              signingConfigs {
+                  esipherRelease {
+                      storeFile file("release.p12")
+                      storePassword System.getenv("ESIPHER_KEYSTORE_PASSWORD")
+                      keyAlias System.getenv("ESIPHER_KEY_ALIAS")
+                      keyPassword System.getenv("ESIPHER_KEYSTORE_PASSWORD")
+                      storeType "PKCS12"
+                  }
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.esipherRelease
+                  }
+              }
+          }
+          GRADLE
+
+      - name: Build debug APK
+        run: ./gradlew --no-daemon assembleDebug
+        working-directory: android
+
+      - name: Build signed release bundle
+        run: ./gradlew --no-daemon bundleRelease
+        working-directory: android
+        env:
+          ESIPHER_KEYSTORE_PASSWORD: ${{ secrets.ESIPHER_KEYSTORE_PASSWORD }}
+          ESIPHER_KEY_ALIAS: ${{ secrets.ESIPHER_KEY_ALIAS }}
+
+      - name: Collect outputs
+        run: |
+          mkdir -p _out
+          cp android/app/build/outputs/apk/debug/app-debug.apk _out/app-debug.apk
+          cp android/app/build/outputs/bundle/release/app-release.aab _out/app-release.aab
+          ls -la _out
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: esipher-app
+          path: _out
+          if-no-files-found: error
+
+  build-ios:
+    runs-on: macos-14
+    # Runs only when Esipher has set this repo variable, which it does
+    # once the App Store Connect fields are filled in. (hashFiles() and
+    # the secrets context aren't usable in a job-level if:, the vars
+    # context is.)
+    if: ${{ vars.ESIPHER_IOS_ENABLED == 'true' }}
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Add the iOS platform
+        run: npx --yes cap add ios
+
+      - name: Generate launcher icons and splash screens
+        run: npx --yes capacitor-assets generate --ios
+
+      - name: Copy web assets into the iOS project
+        run: npx --yes cap sync ios
+
+      - name: Install CocoaPods
+        run: pod install
+        working-directory: ios/App
+
+      - name: Write the App Store Connect API key
+        run: |
+          if [ -z "${ESIPHER_ASC_KEY_P8}" ]; then
+            echo "::error::ESIPHER_ASC_KEY_P8 secret is missing — re-save the iOS settings in Esipher."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s\n' "${ESIPHER_ASC_KEY_P8}" > "$RUNNER_TEMP/asc/AuthKey_${ESIPHER_ASC_KEY_ID}.p8"
+        env:
+          ESIPHER_ASC_KEY_P8: ${{ secrets.ESIPHER_ASC_KEY_P8 }}
+          ESIPHER_ASC_KEY_ID: ${{ secrets.ESIPHER_ASC_KEY_ID }}
+
+      - name: Archive
+        working-directory: ios/App
+        # The bundle identifier comes from capacitor.config.json's appId,
+        # which `npx cap add ios` already wrote into the Xcode project.
+        run: |
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ESIPHER_ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ESIPHER_ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ESIPHER_ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$ESIPHER_APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            archive
+        env:
+          ESIPHER_ASC_KEY_ID: ${{ secrets.ESIPHER_ASC_KEY_ID }}
+          ESIPHER_ASC_ISSUER_ID: ${{ secrets.ESIPHER_ASC_ISSUER_ID }}
+          ESIPHER_APPLE_TEAM_ID: ${{ secrets.ESIPHER_APPLE_TEAM_ID }}
+
+      - name: Export the .ipa
+        working-directory: ios/App
+        run: |
+          xcodebuild \
+            -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportPath "$RUNNER_TEMP/ios-export" \
+            -exportOptionsPlist "$GITHUB_WORKSPACE/exportOptions.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ESIPHER_ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ESIPHER_ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ESIPHER_ASC_ISSUER_ID"
+        env:
+          ESIPHER_ASC_KEY_ID: ${{ secrets.ESIPHER_ASC_KEY_ID }}
+          ESIPHER_ASC_ISSUER_ID: ${{ secrets.ESIPHER_ASC_ISSUER_ID }}
+
+      - name: Collect the .ipa
+        run: |
+          mkdir -p _out_ios
+          cp "$RUNNER_TEMP"/ios-export/*.ipa _out_ios/App.ipa
+          ls -la _out_ios
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: esipher-app-ios
+          path: _out_ios
+          if-no-files-found: error
