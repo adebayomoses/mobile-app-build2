@@ -1,9 +1,9 @@
 {
-    "appId": "com.inwebtify.com",
-    "appName": "Inwebtify",
+    "appId": "com.afrirates.com",
+    "appName": "Afrirates",
     "webDir": "www",
     "server": {
-        "url": "https://inwebtify.com/",
+        "url": "https://afrirates.com/",
         "cleartext": false,
         "androidScheme": "https",
         "errorPath": "index.html"

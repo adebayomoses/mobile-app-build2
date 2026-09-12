@@ -12,7 +12,7 @@
 	<string>Apple Distribution</string>
 	<key>provisioningProfiles</key>
 	<dict>
-		<key>com.inwebtify.com</key>
+		<key>com.afrirates.com</key>
 		<string>Esipher App Store com.inwebtify.com</string>
 	</dict>
 	<key>destination</key>
